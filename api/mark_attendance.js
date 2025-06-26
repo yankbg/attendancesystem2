@@ -1,76 +1,132 @@
 const express = require('express');
-const router = express.Router();
 const { Pool } = require('pg');
+const router = express.Router();
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_0kXx8aimHZfn@ep-super-haze-a92tp83o-pooler.gwc.azure.neon.tech/AttendanceSystem?sslmode=require',
-  ssl: { rejectUnauthorized: false }
-});
-
-router.options('/', (req, res) => {
+// Handle CORS
+router.use((req, res, next) => {
   res.set({
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
-  }).sendStatus(200);
+    'Access-Control-Allow-Headers': 'Content-Type',
+  });
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
 });
 
 router.post('/', async (req, res) => {
-  res.set({
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
-  });
-
   try {
     const { qr_data } = req.body;
-    if (!qr_data) throw new Error("Missing 'qr_data' in request");
+    if (!qr_data) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Missing qr_data in request',
+      });
+    }
 
-    let qr_info = typeof qr_data === 'string' ? JSON.parse(qr_data) : qr_data;
+    let qr_info;
+    try {
+      qr_info = typeof qr_data === 'string' ? JSON.parse(qr_data) : qr_data;
+    } catch (err) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Invalid JSON format in qr_data',
+      });
+    }
+
+    const { studentId, fullname, Date, time } = qr_info;
+
+    // Validate required fields
     const required_fields = ['studentId', 'fullname', 'Date', 'time'];
     for (const field of required_fields) {
-      if (!qr_info[field]) throw new Error(`Missing required field: ${field}`);
-    }
-    const student_id = parseInt(qr_info.studentId);
-    const student_name = qr_info.fullname;
-    const date = qr_info.Date;
-    const time = qr_info.time;
-
-    await pool.query(`CREATE TABLE IF NOT EXISTS attendance (
-      id SERIAL PRIMARY KEY,
-      student_id INT NOT NULL,
-      student_name VARCHAR(255) NOT NULL,
-      date DATE NOT NULL,
-      time TIME NOT NULL,
-      marked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE (student_id, date)
-    )`);
-
-    // Check if attendance already marked
-    const check = await pool.query('SELECT id FROM attendance WHERE student_id = $1 AND date = $2', [student_id, date]);
-    if (check.rows.length > 0) {
-      return res.json({ status: 'error', message: `Attendance already marked for this student on ${date}` });
-    }
-
-    // Insert attendance
-    const insert = await pool.query(
-      'INSERT INTO attendance (student_id, student_name, date, time) VALUES ($1, $2, $3, $4) RETURNING *',
-      [student_id, student_name, date, time]
-    );
-    const record = insert.rows[0];
-    res.json({
-      status: 'success',
-      message: `Attendance marked successfully for student ${student_name}`,
-      data: {
-        studentId: student_id,
-        fullname: student_name,
-        Date: date,
-        time: time,
-        marked_at: record.marked_at
+      if (!qr_info[field]) {
+        return res.status(400).json({
+          status: 'error',
+          message: `Missing required field: ${field}`,
+        });
       }
+    }
+
+    // Validate date and time
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(Date)) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Invalid date format. Expected YYYY-MM-DD.',
+      });
+    }
+
+    const timeRegex = /^(\d{2}:\d{2}(:\d{2})?)$/;
+    if (!timeRegex.test(time)) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Invalid time format. Expected HH:MM:SS or HH:MM.',
+      });
+    }
+    const formattedTime = time.length === 5 ? `${time}:00` : time;
+
+    // Connect to PostgreSQL
+    const pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
     });
-  } catch (e) {
-    res.status(400).json({ status: 'error', message: e.message });
+
+    const client = await pool.connect();
+
+    // Create attendance table if not exists
+    const createTableSQL = `
+      CREATE TABLE IF NOT EXISTS attendance (
+        id SERIAL PRIMARY KEY,
+        student_id INT NOT NULL,
+        student_name VARCHAR(255) NOT NULL,
+        date DATE NOT NULL,
+        time TIME NOT NULL,
+        marked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (student_id, date)
+      )`;
+    await client.query(createTableSQL);
+
+    // Check for existing attendance
+    const checkResult = await client.query(
+      'SELECT id FROM attendance WHERE student_id = $1 AND date = $2',
+      [parseInt(studentId), Date]
+    );
+
+    if (checkResult.rows.length > 0) {
+      client.release();
+      return res.status(400).json({
+        status: 'error',
+        message: `Attendance already marked for this student on ${Date}`,
+      });
+    }
+
+    // Insert attendance record
+    const insertResult = await client.query(
+      'INSERT INTO attendance (student_id, student_name, date, time) VALUES ($1, $2, $3, $4) RETURNING *',
+      [parseInt(studentId), fullname, Date, formattedTime]
+    );
+
+    client.release();
+    await pool.end();
+
+    const record = insertResult.rows[0];
+    return res.json({
+      status: 'success',
+      message: `Attendance marked successfully for student ${fullname}`,
+      data: {
+        studentId: parseInt(studentId),
+        fullname,
+        Date,
+        time: formattedTime,
+        marked_at: record.marked_at,
+      },
+    });
+  } catch (err) {
+    console.error('Error:', err.message);
+    return res.status(400).json({
+      status: 'error',
+      message: err.message,
+    });
   }
 });
 
