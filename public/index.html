@@ -94,7 +94,7 @@
 
             // AJAX call to check student
             $.ajax({
-                url: '/api/check_student',
+                url: '/api/check_student.js',
                 method: 'POST',
                 contentType: 'application/json',
                 data: JSON.stringify({ studentId, fullname: fullName }),
@@ -130,7 +130,7 @@
                 },
                 error: function(xhr, status, error) {
                     console.error('AJAX error:', status, error);
-                    alert('Error checking student in database: ' + error);
+                    alert('Error checking student in database:00 ' + error);
                 }
             });
         });

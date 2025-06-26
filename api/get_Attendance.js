@@ -1,37 +1,55 @@
 const express = require('express');
-const router = express.Router();
 const { Pool } = require('pg');
+const router = express.Router();
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_0kXx8aimHZfn@ep-super-haze-a92tp83o-pooler.gwc.azure.neon.tech/AttendanceSystem?sslmode=require',
-  ssl: { rejectUnauthorized: false }
-});
-
-router.options('/', (req, res) => {
+// Handle CORS
+router.use((req, res, next) => {
   res.set({
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
-  }).sendStatus(200);
+    'Access-Control-Allow-Headers': 'Content-Type',
+  });
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
 });
 
 router.get('/', async (req, res) => {
-  res.set({
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
+  // Connect to PostgreSQL
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
   });
 
   try {
-    const result = await pool.query('SELECT student_name, student_id, date, time FROM attendance ORDER BY date DESC, time DESC');
-    res.json({
+    const client = await pool.connect();
+    const result = await client.query(
+      'SELECT student_name, student_id, date, time FROM attendance ORDER BY date DESC, time DESC'
+    );
+    client.release();
+
+    const attendance_records = result.rows.map(row => ({
+      ...row,
+      student_id: parseInt(row.student_id),
+    }));
+
+    return res.json({
       status: 'success',
-      message: result.rows.length ? 'Attendance records retrieved successfully' : 'No attendance records found',
-      data: result.rows,
-      count: result.rows.length
+      message: attendance_records.length
+        ? 'Attendance records retrieved successfully'
+        : 'No attendance records found',
+      data: attendance_records,
+      count: attendance_records.length,
     });
   } catch (err) {
-    res.status(500).json({ status: 'error', message: 'Query failed: ' + err.message });
+    console.error('Database error:', err.message);
+    return res.status(500).json({
+      status: 'error',
+      message: 'Query failed: ' + err.message,
+    });
+  } finally {
+    await pool.end();
   }
 });
 
