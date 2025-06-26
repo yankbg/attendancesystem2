@@ -1,47 +1,73 @@
 const express = require('express');
-const router = express.Router();
 const { Pool } = require('pg');
+const router = express.Router();
 
-// Pool config (use env vars in production)
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_0kXx8aimHZfn@ep-super-haze-a92tp83o-pooler.gwc.azure.neon.tech/AttendanceSystem?sslmode=require',
-  ssl: { rejectUnauthorized: false }
-});
-
-router.options('/', (req, res) => {
+// Handle CORS
+router.use((req, res, next) => {
   res.set({
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
-  }).sendStatus(200);
+    'Access-Control-Allow-Headers': 'Content-Type',
+  });
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
 });
 
 router.post('/', async (req, res) => {
-  res.set({
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
+  const { studentId, fullname } = req.body;
+
+  // Validate inputs
+  if (!studentId || !fullname) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Missing studentId or fullname',
+    });
+  }
+
+  if (isNaN(studentId)) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Invalid student Id',
+    });
+  }
+
+  // Connect to PostgreSQL
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
   });
 
-  const { studentId, fullname } = req.body;
-  if (!studentId || !fullname) {
-    return res.json({ status: 'error', message: 'Missing studentId or fullname' });
-  }
-  if (isNaN(studentId)) {
-    return res.json({ status: 'error', message: 'Invalid student Id' });
-  }
   try {
-    const result = await pool.query(
+    const client = await pool.connect();
+    const result = await client.query(
       'SELECT id, image_path FROM students WHERE id = $1 AND name ILIKE $2',
       [parseInt(studentId), fullname]
     );
+    client.release();
+
     if (result.rows.length > 0) {
-      res.json({ status: 'success', exists: true, image_path: result.rows[0].image_path });
+      return res.json({
+        status: 'success',
+        exists: true,
+        image_path: result.rows[0].image_path,
+      });
     } else {
-      res.json({ status: 'error', exists: false, message: 'Student not found' });
+      return res.status(404).json({
+        status: 'error',
+        exists: false,
+        message: 'Student not found',
+      });
     }
   } catch (err) {
-    res.json({ status: 'error', message: 'Database error: ' + err.message });
+    console.error('Database error:', err.message);
+    return res.status(500).json({
+      status: 'error',
+      message: 'Database error: ' + err.message,
+    });
+  } finally {
+    await pool.end();
   }
 });
 
